@@ -9,7 +9,7 @@ const PORT = process.env.PORT || 3000;
 
 app.use(bodyParser.json());
 app.use(cors({
-  origin: 'https://astonishing-cassata-3e8929.netlify.app'   // replace if frontend domain changes
+  origin: 'https://astonishing-cassata-3e8929.netlify.app'   // keep your frontend domain
 }));
 
 // -------- Firebase Init --------
@@ -51,7 +51,7 @@ app.post('/pay', async (req, res) => {
 
     // Save pending transaction
     await db.collection("transactions").doc(external_reference).set({
-      phone: formattedPhone,   // 🔥 FIX: always include phone
+      phone: formattedPhone,
       amount: Math.round(amount),
       status: "PENDING",
       createdAt: FieldValue.serverTimestamp()
@@ -78,7 +78,7 @@ app.post('/pay', async (req, res) => {
 
     if (resp.data?.success) {
       await db.collection("transactions").doc(external_reference).set({
-        phone: formattedPhone,   // 🔥 FIX: keep phone field
+        phone: formattedPhone,
         status: "INITIATED",
         swiftwallet: resp.data,
         updatedAt: FieldValue.serverTimestamp()
@@ -87,7 +87,7 @@ app.post('/pay', async (req, res) => {
       res.json({ success: true, message: "STK push sent, check your phone" });
     } else {
       await db.collection("transactions").doc(external_reference).set({
-        phone: formattedPhone,   // 🔥 FIX: keep phone field
+        phone: formattedPhone,
         status: "FAILED",
         error: resp.data?.error || "Payment initiation failed",
         updatedAt: FieldValue.serverTimestamp()
@@ -116,13 +116,15 @@ app.post('/callback', async (req, res) => {
     const phone = formatPhone(data?.result?.Phone || data.phone_number);
     const amount = Number(data?.result?.Amount || data.amount);
     const reference = data.external_reference;
-    const success = data.success && data.status === "completed";
 
-    if (success && phone && reference) {
+    const status = data?.status || data?.result?.status;
+    const isSuccess = (data.success === true) || (status && status.toLowerCase() === "completed");
+
+    if (isSuccess && phone && reference) {
       // Update transaction
       const txnRef = db.collection("transactions").doc(reference);
       await txnRef.set({
-        phone,   // 🔥 FIX: ensure phone always stored
+        phone,
         status: "SUCCESS",
         callback: data,
         updatedAt: FieldValue.serverTimestamp()
@@ -136,12 +138,16 @@ app.post('/callback', async (req, res) => {
         if (doc.exists) {
           newBalance += doc.data().balance || 0;
         }
-        t.set(userRef, { phone, balance: newBalance, updatedAt: FieldValue.serverTimestamp() });
+        t.set(userRef, { 
+          phone, 
+          balance: newBalance, 
+          updatedAt: FieldValue.serverTimestamp() 
+        });
       });
 
-      console.log(`✅ Balance updated for ${phone}`);
+      console.log(`✅ Balance updated for ${phone} +${amount}`);
     } else {
-      console.log("⚠️ Callback was not success or missing data");
+      console.log("⚠️ Callback not successful or missing data:", data);
     }
 
     res.json({ ResultCode: 0, ResultDesc: "Success" });
@@ -158,18 +164,33 @@ app.get('/balance/:phone', async (req, res) => {
     const phone = formatPhone(req.params.phone);
     if (!phone) return res.status(400).json({ success: false, error: "Invalid phone" });
 
-    const userDoc = await db.collection("users").doc(phone).get();
-    const balance = userDoc.exists ? (userDoc.data().balance || 0) : 0;
+    let balance = 0;
 
+    // 🔄 Always recalc balance from successful transactions
+    const txnsSnap = await db.collection("transactions")
+      .where("phone", "==", phone)
+      .where("status", "==", "SUCCESS")
+      .get();
+
+    balance = txnsSnap.docs.reduce((sum, doc) => sum + (doc.data().amount || 0), 0);
+
+    // ✅ Save the corrected balance into users collection
+    await db.collection("users").doc(phone).set({
+      phone,
+      balance,
+      updatedAt: FieldValue.serverTimestamp()
+    }, { merge: true });
+
+    // Get last 5 transactions
     let transactions = [];
     try {
-      const txnsSnap = await db.collection("transactions")
+      const recentTxnsSnap = await db.collection("transactions")
         .where("phone", "==", phone)
         .orderBy("createdAt", "desc")
         .limit(5)
         .get();
 
-      transactions = txnsSnap.docs.map(doc => {
+      transactions = recentTxnsSnap.docs.map(doc => {
         const d = doc.data();
         return {
           id: doc.id,
