@@ -9,23 +9,20 @@ const PORT = process.env.PORT || 3000;
 
 app.use(bodyParser.json());
 app.use(cors({
-  origin: 'https://swiftwallet2024.netlify.app'
+  origin: 'https://swiftloanke-com.onrender.com'   // adjust if frontend changes
 }));
 
 // -------- Firebase Init --------
-if (process.env.FIREBASE_SERVICE_ACCOUNT) {
-  // Render: read from env var
-  const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
-  admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount)
-  });
-} else {
-  // Local dev: use firebase-key.json
-  const serviceAccount = require("./firebase-key.json");
-  admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount)
-  });
+if (!process.env.FIREBASE_SERVICE_ACCOUNT) {
+  console.error("❌ Missing FIREBASE_SERVICE_ACCOUNT env variable");
+  process.exit(1);
 }
+
+const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount)
+});
 
 const db = admin.firestore();
 const { FieldValue } = admin.firestore;
@@ -153,5 +150,5 @@ app.get('/balance/:phone', async (req, res) => {
 
 // -------- Start Server --------
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log(`🚀 Server running on port ${PORT}`);
 });
