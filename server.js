@@ -9,7 +9,7 @@ const PORT = process.env.PORT || 3000;
 
 app.use(bodyParser.json());
 app.use(cors({
-  origin: 'https://astonishing-cassata-3e8929.netlify.app'   // keep your frontend domain
+  origin: 'https://roaring-platypus-ae8776.netlify.app'   // keep your frontend domain
 }));
 
 // -------- Firebase Init --------
@@ -315,5 +315,7 @@ app.get('/health', (req, res) => {
 
 // -------- Start Server --------
 app.listen(PORT, () => {
+  console.log(`🚀 Server running on port ${PORT}`);
+});app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });
