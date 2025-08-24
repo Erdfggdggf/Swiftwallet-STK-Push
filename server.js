@@ -9,7 +9,7 @@ const PORT = process.env.PORT || 3000;
 
 app.use(bodyParser.json());
 app.use(cors({
-  origin: 'https://heroic-bienenstitch-c1bb20.netlify.app'   // allow all origins; adjust to your frontend domain in production
+  origin: 'https://heroic-bienenstitch-c1bb20.netlify.app'   // replace if frontend domain changes
 }));
 
 // -------- Firebase Init --------
@@ -163,7 +163,7 @@ app.get('/balance/:phone', async (req, res) => {
   if (!phone) return res.status(400).json({ success: false, error: "Invalid phone" });
 
   const userDoc = await db.collection("users").doc(phone).get();
-  const balance = userDoc.exists ? userDoc.data().balance : 0;
+  const balance = userDoc.exists ? (userDoc.data().balance || 0) : 0;
 
   const txnsSnap = await db.collection("transactions")
     .where("phone", "==", phone)
@@ -171,7 +171,15 @@ app.get('/balance/:phone', async (req, res) => {
     .limit(5)
     .get();
 
-  const transactions = txnsSnap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+  const transactions = txnsSnap.docs.map(doc => {
+    const d = doc.data();
+    return {
+      id: doc.id,
+      amount: d.amount,
+      status: d.status,
+      createdAt: d.createdAt ? d.createdAt.toDate() : null
+    };
+  });
 
   res.json({ phone, balance, transactions });
 });
