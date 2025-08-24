@@ -9,7 +9,7 @@ const PORT = process.env.PORT || 3000;
 
 app.use(bodyParser.json());
 app.use(cors({
-  origin: 'https://shiny-centaur-0fddda.netlify.app'   // adjust if frontend changes
+  origin: '*'   // allow all origins; adjust to your frontend domain in production
 }));
 
 // -------- Firebase Init --------
@@ -17,9 +17,7 @@ if (!process.env.FIREBASE_SERVICE_ACCOUNT) {
   console.error("❌ Missing FIREBASE_SERVICE_ACCOUNT env variable");
   process.exit(1);
 }
-
 const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
-
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount)
 });
@@ -65,27 +63,47 @@ app.post('/pay', async (req, res) => {
       external_reference,
       customer_name: 'Customer',
       callback_url: `${process.env.BASE_URL}/callback?secret=${process.env.CALLBACK_SECRET}`,
-      channel_id: "000041"
+      channel_id: process.env.CHANNEL_ID || "000094"
     };
 
     const url = "https://swiftwallet.co.ke/pay-app-v2/payments.php";
     const resp = await axios.post(url, payload, {
       headers: {
-        Authorization: `Bearer fb53284f56ed14a6ea3ca908c70763b5d00d03e769576611e5f337709d4c7f5a`,
+        Authorization: `Bearer ${process.env.SWIFTWALLET_API_KEY}`,
         'Content-Type': 'application/json'
       }
     });
 
-    console.log("SwiftWallet response:", resp.data);
+    console.log("📤 SwiftWallet response:", resp.data);
 
     if (resp.data?.success) {
+      // Update transaction with SwiftWallet IDs
+      await db.collection("transactions").doc(external_reference).set({
+        status: "INITIATED",
+        swiftwallet: {
+          reference: resp.data.reference,
+          transaction_id: resp.data.transaction_id,
+          checkout_request_id: resp.data.checkout_request_id,
+          merchant_request_id: resp.data.merchant_request_id,
+          channel_type: resp.data.channel_type,
+          message: resp.data.message
+        },
+        updatedAt: FieldValue.serverTimestamp()
+      }, { merge: true });
+
       res.json({ success: true, message: "STK push sent, check your phone" });
     } else {
+      await db.collection("transactions").doc(external_reference).set({
+        status: "FAILED",
+        error: resp.data?.error || "Payment initiation failed",
+        updatedAt: FieldValue.serverTimestamp()
+      }, { merge: true });
+
       res.status(400).json({ success: false, error: resp.data?.error || "Payment initiation failed" });
     }
 
   } catch (err) {
-    console.error(err);
+    console.error("🚨 /pay error:", err);
     res.status(500).json({ success: false, error: "Server error" });
   }
 });
@@ -99,12 +117,12 @@ app.post('/callback', async (req, res) => {
     }
 
     const data = req.body;
-    console.log("Callback received:", data);
+    console.log("📥 Callback received:", data);
 
-    const phone = formatPhone(data.phone_number);
-    const amount = Number(data.amount);
+    const phone = formatPhone(data?.result?.Phone || data.phone_number);
+    const amount = Number(data?.result?.Amount || data.amount);
     const reference = data.external_reference;
-    const success = data.success;
+    const success = data.success && data.status === "completed";
 
     if (success && phone && reference) {
       // Update transaction
@@ -127,25 +145,35 @@ app.post('/callback', async (req, res) => {
       });
 
       console.log(`✅ Balance updated for ${phone}`);
+    } else {
+      console.log("⚠️ Callback was not success or missing data");
     }
 
     res.json({ ResultCode: 0, ResultDesc: "Success" });
 
   } catch (err) {
-    console.error("Callback error:", err);
+    console.error("🚨 Callback error:", err);
     res.status(500).json({ ResultCode: 1, ResultDesc: "Failed" });
   }
 });
 
-// -------- Get Balance Endpoint --------
+// -------- Get Balance + Transactions --------
 app.get('/balance/:phone', async (req, res) => {
   const phone = formatPhone(req.params.phone);
   if (!phone) return res.status(400).json({ success: false, error: "Invalid phone" });
 
-  const doc = await db.collection("users").doc(phone).get();
-  if (!doc.exists) return res.json({ phone, balance: 0 });
+  const userDoc = await db.collection("users").doc(phone).get();
+  const balance = userDoc.exists ? userDoc.data().balance : 0;
 
-  res.json({ phone, balance: doc.data().balance });
+  const txnsSnap = await db.collection("transactions")
+    .where("phone", "==", phone)
+    .orderBy("createdAt", "desc")
+    .limit(5)
+    .get();
+
+  const transactions = txnsSnap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+
+  res.json({ phone, balance, transactions });
 });
 
 // -------- Start Server --------
