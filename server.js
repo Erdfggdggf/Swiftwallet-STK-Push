@@ -117,6 +117,7 @@ app.post('/callback', async (req, res) => {
     const amount = Number(data?.result?.Amount || data.amount);
     const reference = data.external_reference;
 
+    // ✅ Flexible success check
     const status = data?.status || data?.result?.status;
     const isSuccess = (data.success === true) || (status && status.toLowerCase() === "completed");
 
@@ -164,33 +165,28 @@ app.get('/balance/:phone', async (req, res) => {
     const phone = formatPhone(req.params.phone);
     if (!phone) return res.status(400).json({ success: false, error: "Invalid phone" });
 
-    let balance = 0;
+    const userDoc = await db.collection("users").doc(phone).get();
+    let balance = userDoc.exists ? (userDoc.data().balance || 0) : 0;
 
-    // 🔄 Always recalc balance from successful transactions
-    const txnsSnap = await db.collection("transactions")
-      .where("phone", "==", phone)
-      .where("status", "==", "SUCCESS")
-      .get();
+    // ✅ Safety fallback: if balance is 0, recalc from transactions
+    if (balance === 0) {
+      const txnsSnap = await db.collection("transactions")
+        .where("phone", "==", phone)
+        .where("status", "==", "SUCCESS")
+        .get();
 
-    balance = txnsSnap.docs.reduce((sum, doc) => sum + (doc.data().amount || 0), 0);
+      balance = txnsSnap.docs.reduce((sum, doc) => sum + (doc.data().amount || 0), 0);
+    }
 
-    // ✅ Save the corrected balance into users collection
-    await db.collection("users").doc(phone).set({
-      phone,
-      balance,
-      updatedAt: FieldValue.serverTimestamp()
-    }, { merge: true });
-
-    // Get last 5 transactions
     let transactions = [];
     try {
-      const recentTxnsSnap = await db.collection("transactions")
+      const txnsSnap = await db.collection("transactions")
         .where("phone", "==", phone)
         .orderBy("createdAt", "desc")
         .limit(5)
         .get();
 
-      transactions = recentTxnsSnap.docs.map(doc => {
+      transactions = txnsSnap.docs.map(doc => {
         const d = doc.data();
         return {
           id: doc.id,
