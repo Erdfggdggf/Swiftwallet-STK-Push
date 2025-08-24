@@ -1,7 +1,7 @@
 {
   "name": "swiftwallet-stk-push",
   "version": "1.0.0",
-  "description": "SwiftWallet STK Push backend with Firebase balance tracking",
+  "description": "SwiftWallet STK Push backend with Firebase balance + transactions tracking",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -16,6 +16,9 @@
   },
   "devDependencies": {
     "nodemon": "^3.1.0"
+  },
+  "engines": {
+    "node": ">=18.x"
   },
   "license": "MIT"
 }
