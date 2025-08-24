@@ -9,7 +9,7 @@ const PORT = process.env.PORT || 3000;
 
 app.use(bodyParser.json());
 app.use(cors({
-  origin: 'https://scintillating-maamoul-912e4d.netlify.app'   // keep your frontend domain
+  origin: 'https://astonishing-cassata-3e8929.netlify.app'   // keep your frontend domain
 }));
 
 // -------- Firebase Init --------
@@ -41,10 +41,10 @@ app.post('/pay', async (req, res) => {
     const formattedPhone = formatPhone(phone);
 
     if (!formattedPhone) {
-      return res.status(400).json({ success: false, error: 'Invalid phone format' });
+      return res.status(400).json({ success: false, message: 'Invalid phone format' });
     }
     if (!amount || amount < 1) {
-      return res.status(400).json({ success: false, error: 'Amount must be >= 1' });
+      return res.status(400).json({ success: false, message: 'Amount must be >= 1' });
     }
 
     const external_reference = 'ORDER-' + Date.now();
@@ -54,6 +54,7 @@ app.post('/pay', async (req, res) => {
       phone: formattedPhone,
       amount: Math.round(amount),
       status: "PENDING",
+      reference: external_reference,
       createdAt: FieldValue.serverTimestamp()
     });
 
@@ -79,26 +80,36 @@ app.post('/pay', async (req, res) => {
     if (resp.data?.success) {
       await db.collection("transactions").doc(external_reference).set({
         phone: formattedPhone,
+        amount: Math.round(amount),
         status: "INITIATED",
+        reference: external_reference,
         swiftwallet: resp.data,
         updatedAt: FieldValue.serverTimestamp()
       }, { merge: true });
 
-      res.json({ success: true, message: "STK push sent, check your phone" });
+      res.json({ 
+        success: true, 
+        message: "STK push sent, check your phone",
+        amount: Math.round(amount),
+        phone: formattedPhone,
+        reference: external_reference
+      });
     } else {
       await db.collection("transactions").doc(external_reference).set({
         phone: formattedPhone,
+        amount: Math.round(amount),
         status: "FAILED",
+        reference: external_reference,
         error: resp.data?.error || "Payment initiation failed",
         updatedAt: FieldValue.serverTimestamp()
       }, { merge: true });
 
-      res.status(400).json({ success: false, error: resp.data?.error || "Payment initiation failed" });
+      res.status(400).json({ success: false, message: resp.data?.error || "Payment initiation failed" });
     }
 
   } catch (err) {
     console.error("🚨 /pay error:", err);
-    res.status(500).json({ success: false, error: "Server error" });
+    res.status(500).json({ success: false, message: "Server error" });
   }
 });
 
@@ -134,7 +145,9 @@ app.post('/callback', async (req, res) => {
       const txnRef = db.collection("transactions").doc(reference);
       await txnRef.set({
         phone,
+        amount,
         status: "SUCCESS",
+        reference,
         callback: data,
         updatedAt: FieldValue.serverTimestamp()
       }, { merge: true });
@@ -154,8 +167,16 @@ app.post('/callback', async (req, res) => {
         });
       });
 
-      console.log(`✅ Balance updated for ${phone} +${amount}`);
+      console.log(`✅ Balance updated for ${phone} +${amount}, new balance: ${newBalance}`);
     } else {
+      // Mark transaction as failed
+      if (reference) {
+        await db.collection("transactions").doc(reference).set({
+          status: "FAILED",
+          callback: data,
+          updatedAt: FieldValue.serverTimestamp()
+        }, { merge: true });
+      }
       console.log("⚠️ Callback not successful or missing data:", data);
     }
 
@@ -171,7 +192,7 @@ app.post('/callback', async (req, res) => {
 app.get('/balance/:phone', async (req, res) => {
   try {
     const phone = formatPhone(req.params.phone);
-    if (!phone) return res.status(400).json({ success: false, error: "Invalid phone" });
+    if (!phone) return res.status(400).json({ success: false, message: "Invalid phone" });
 
     const userDoc = await db.collection("users").doc(phone).get();
     let balance = userDoc.exists ? (userDoc.data().balance || 0) : 0;
@@ -184,6 +205,13 @@ app.get('/balance/:phone', async (req, res) => {
         .get();
 
       balance = txnsSnap.docs.reduce((sum, doc) => sum + (parseFloat(doc.data().amount) || 0), 0);
+      
+      // Update the users collection with recalculated balance
+      await db.collection("users").doc(phone).set({
+        phone,
+        balance,
+        updatedAt: FieldValue.serverTimestamp()
+      }, { merge: true });
     }
 
     let transactions = [];
@@ -198,9 +226,10 @@ app.get('/balance/:phone', async (req, res) => {
         const d = doc.data();
         return {
           id: doc.id,
-          amount: d.amount,
-          status: d.status,
-          createdAt: d.createdAt ? d.createdAt.toDate() : null
+          amount: d.amount || 0,
+          status: d.status || 'pending',
+          date: d.createdAt ? d.createdAt.toDate().toISOString() : new Date().toISOString(),
+          reference: d.reference || doc.id
         };
       });
     } catch (indexErr) {
@@ -211,14 +240,19 @@ app.get('/balance/:phone', async (req, res) => {
     res.json({ 
       success: true, 
       phone, 
-      balance, 
+      balance: balance || 0, 
       transactions 
     });
 
   } catch (err) {
     console.error("🚨 /balance error:", err);
-    res.status(500).json({ success: false, error: "Server error while fetching balance" });
+    res.status(500).json({ success: false, message: "Server error while fetching balance" });
   }
+});
+
+// -------- Health Check --------
+app.get('/health', (req, res) => {
+  res.json({ status: 'OK', timestamp: new Date().toISOString() });
 });
 
 // -------- Start Server --------
