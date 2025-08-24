@@ -122,77 +122,62 @@ app.post('/callback', async (req, res) => {
     }
 
     const data = req.body;
-    console.log("📥 Callback received:", JSON.stringify(data, null, 2));
+    console.log("📥 Callback received:", data);
 
-    const phone = formatPhone(data?.result?.Phone || data.phone_number || data?.Phone);
-    const reference = data.external_reference || data?.CheckoutRequestID;
+    const phone = formatPhone(data?.result?.Phone || data.phone_number);
 
-    // ✅ Enhanced amount parsing - try multiple fields
-    const rawAmount = data?.result?.Amount || data.amount || data?.Amount || data?.TransAmount || 0;
+    // ✅ safer amount parsing
+    const rawAmount = data?.result?.Amount || data.amount || 0;
     const amount = parseFloat(rawAmount);
-    
     if (isNaN(amount) || amount <= 0) {
       console.warn("⚠️ Invalid amount in callback:", rawAmount);
       return res.json({ ResultCode: 0, ResultDesc: "Ignored invalid amount" });
     }
 
-    // ✅ Enhanced success detection - multiple patterns
-    const status = data?.status || data?.result?.status || data?.ResultCode;
-    const resultDesc = data?.ResultDesc || data?.result?.ResultDesc || '';
-    
-    const isSuccess = (
-      data.success === true || 
-      status === "0" || 
-      status === 0 || 
-      (status && status.toString().toLowerCase() === "completed") ||
-      (resultDesc && resultDesc.toLowerCase().includes("success")) ||
-      (data?.ResultCode === "0") ||
-      (data?.ResultCode === 0)
-    );
+    const reference = data.external_reference;
 
-    console.log(`📊 Processing callback - Phone: ${phone}, Amount: ${amount}, Reference: ${reference}, Success: ${isSuccess}`);
+    // ✅ Flexible success check
+    const status = data?.status || data?.result?.status;
+    const isSuccess = (data.success === true) || (status && status.toLowerCase() === "completed");
 
-    if (phone && reference) {
-      if (isSuccess) {
-        // Update transaction to SUCCESS
-        const txnRef = db.collection("transactions").doc(reference);
-        await txnRef.set({
-          phone,
-          amount,
-          status: "SUCCESS",
-          reference,
-          callback: data,
-          updatedAt: FieldValue.serverTimestamp()
-        }, { merge: true });
+    if (isSuccess && phone && reference) {
+      // Update transaction
+      const txnRef = db.collection("transactions").doc(reference);
+      await txnRef.set({
+        phone,
+        amount,
+        status: "SUCCESS",
+        reference,
+        callback: data,
+        updatedAt: FieldValue.serverTimestamp()
+      }, { merge: true });
 
-        // Update user balance atomically
-        const userRef = db.collection("users").doc(phone);
-        let newBalance = 0;
-        await db.runTransaction(async (t) => {
-          const doc = await t.get(userRef);
-          newBalance = amount;
-          if (doc.exists) {
-            newBalance += doc.data().balance || 0;
-          }
-          t.set(userRef, { 
-            phone, 
-            balance: newBalance, 
-            updatedAt: FieldValue.serverTimestamp() 
-          });
+      // Update user balance atomically
+      const userRef = db.collection("users").doc(phone);
+      await db.runTransaction(async (t) => {
+        const doc = await t.get(userRef);
+        let newBalance = amount;
+        if (doc.exists) {
+          newBalance += doc.data().balance || 0;
+        }
+        t.set(userRef, { 
+          phone, 
+          balance: newBalance, 
+          updatedAt: FieldValue.serverTimestamp() 
         });
+      });
 
-        console.log(`✅ Balance updated for ${phone} +${amount}, new balance: ${newBalance}`);
-      } else {
-        // Mark transaction as failed
+      console.log(`✅ Balance updated for ${phone} +${amount}, new balance: ${newBalance}`);
+    } else {
+      // Mark transaction as failed
+      if (reference) {
         await db.collection("transactions").doc(reference).set({
           status: "FAILED",
           callback: data,
           updatedAt: FieldValue.serverTimestamp()
         }, { merge: true });
-        console.log(`❌ Transaction ${reference} marked as FAILED`);
       }
-    } else {
-      console.warn("⚠️ Missing phone or reference in callback:", { phone, reference });
+      console.log("⚠️ Callback not successful or missing data:", data);
     }
 
     res.json({ ResultCode: 0, ResultDesc: "Success" });
@@ -200,49 +185,6 @@ app.post('/callback', async (req, res) => {
   } catch (err) {
     console.error("🚨 Callback error:", err);
     res.status(500).json({ ResultCode: 1, ResultDesc: "Failed" });
-  }
-});
-
-// -------- Manual Status Update Endpoint (for testing) --------
-app.post('/update-status/:reference', async (req, res) => {
-  try {
-    const { reference } = req.params;
-    const { status } = req.body;
-    
-    const txnRef = db.collection("transactions").doc(reference);
-    const txnDoc = await txnRef.get();
-    
-    if (!txnDoc.exists) {
-      return res.status(404).json({ success: false, message: "Transaction not found" });
-    }
-    
-    const txnData = txnDoc.data();
-    await txnRef.set({
-      status: status.toUpperCase(),
-      updatedAt: FieldValue.serverTimestamp()
-    }, { merge: true });
-    
-    // If marking as SUCCESS, update balance
-    if (status.toUpperCase() === "SUCCESS" && txnData.phone && txnData.amount) {
-      const userRef = db.collection("users").doc(txnData.phone);
-      await db.runTransaction(async (t) => {
-        const doc = await t.get(userRef);
-        let newBalance = txnData.amount;
-        if (doc.exists) {
-          newBalance += doc.data().balance || 0;
-        }
-        t.set(userRef, { 
-          phone: txnData.phone, 
-          balance: newBalance, 
-          updatedAt: FieldValue.serverTimestamp() 
-        });
-      });
-    }
-    
-    res.json({ success: true, message: `Transaction ${reference} updated to ${status}` });
-  } catch (err) {
-    console.error("🚨 Status update error:", err);
-    res.status(500).json({ success: false, message: "Server error" });
   }
 });
 
@@ -315,7 +257,5 @@ app.get('/health', (req, res) => {
 
 // -------- Start Server --------
 app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-});app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });
