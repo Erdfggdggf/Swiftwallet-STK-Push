@@ -9,7 +9,7 @@ const PORT = process.env.PORT || 3000;
 
 app.use(bodyParser.json());
 app.use(cors({
-  origin: 'https://roaring-platypus-ae8776.netlify.app'   // keep your frontend domain
+  origin: 'https://stupendous-beijinho-7b76b1.netlify.app'   // keep your frontend domain
 }));
 
 // -------- Firebase Init --------
@@ -64,7 +64,7 @@ app.post('/pay', async (req, res) => {
       external_reference,
       customer_name: 'Customer',
       callback_url: `${process.env.BASE_URL}/callback?secret=${process.env.CALLBACK_SECRET}`,
-      channel_id: process.env.CHANNEL_ID || "000093"
+      channel_id: process.env.CHANNEL_ID || "000041"
     };
 
     const url = "https://swiftwallet.co.ke/pay-app-v2/payments.php";
