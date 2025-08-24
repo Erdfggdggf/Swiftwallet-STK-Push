@@ -9,7 +9,7 @@ const PORT = process.env.PORT || 3000;
 
 app.use(bodyParser.json());
 app.use(cors({
-  origin: 'https://superb-croquembouche-acd42a.netlify.app'   // replace if frontend domain changes
+  origin: 'https://heroic-bienenstitch-c1bb20.netlify.app'   // replace if frontend domain changes
 }));
 
 // -------- Firebase Init --------
@@ -51,7 +51,7 @@ app.post('/pay', async (req, res) => {
 
     // Save pending transaction
     await db.collection("transactions").doc(external_reference).set({
-      phone: formattedPhone,
+      phone: formattedPhone,   // 🔥 FIX: always include phone
       amount: Math.round(amount),
       status: "PENDING",
       createdAt: FieldValue.serverTimestamp()
@@ -77,23 +77,17 @@ app.post('/pay', async (req, res) => {
     console.log("📤 SwiftWallet response:", resp.data);
 
     if (resp.data?.success) {
-      // Update transaction with SwiftWallet IDs
       await db.collection("transactions").doc(external_reference).set({
+        phone: formattedPhone,   // 🔥 FIX: keep phone field
         status: "INITIATED",
-        swiftwallet: {
-          reference: resp.data.reference,
-          transaction_id: resp.data.transaction_id,
-          checkout_request_id: resp.data.checkout_request_id,
-          merchant_request_id: resp.data.merchant_request_id,
-          channel_type: resp.data.channel_type,
-          message: resp.data.message
-        },
+        swiftwallet: resp.data,
         updatedAt: FieldValue.serverTimestamp()
       }, { merge: true });
 
       res.json({ success: true, message: "STK push sent, check your phone" });
     } else {
       await db.collection("transactions").doc(external_reference).set({
+        phone: formattedPhone,   // 🔥 FIX: keep phone field
         status: "FAILED",
         error: resp.data?.error || "Payment initiation failed",
         updatedAt: FieldValue.serverTimestamp()
@@ -128,12 +122,13 @@ app.post('/callback', async (req, res) => {
       // Update transaction
       const txnRef = db.collection("transactions").doc(reference);
       await txnRef.set({
+        phone,   // 🔥 FIX: ensure phone always stored
         status: "SUCCESS",
         callback: data,
         updatedAt: FieldValue.serverTimestamp()
       }, { merge: true });
 
-      // Update user balance
+      // Update user balance atomically
       const userRef = db.collection("users").doc(phone);
       await db.runTransaction(async (t) => {
         const doc = await t.get(userRef);
@@ -159,29 +154,46 @@ app.post('/callback', async (req, res) => {
 
 // -------- Get Balance + Transactions --------
 app.get('/balance/:phone', async (req, res) => {
-  const phone = formatPhone(req.params.phone);
-  if (!phone) return res.status(400).json({ success: false, error: "Invalid phone" });
+  try {
+    const phone = formatPhone(req.params.phone);
+    if (!phone) return res.status(400).json({ success: false, error: "Invalid phone" });
 
-  const userDoc = await db.collection("users").doc(phone).get();
-  const balance = userDoc.exists ? (userDoc.data().balance || 0) : 0;
+    const userDoc = await db.collection("users").doc(phone).get();
+    const balance = userDoc.exists ? (userDoc.data().balance || 0) : 0;
 
-  const txnsSnap = await db.collection("transactions")
-    .where("phone", "==", phone)
-    .orderBy("createdAt", "desc")
-    .limit(5)
-    .get();
+    let transactions = [];
+    try {
+      const txnsSnap = await db.collection("transactions")
+        .where("phone", "==", phone)
+        .orderBy("createdAt", "desc")
+        .limit(5)
+        .get();
 
-  const transactions = txnsSnap.docs.map(doc => {
-    const d = doc.data();
-    return {
-      id: doc.id,
-      amount: d.amount,
-      status: d.status,
-      createdAt: d.createdAt ? d.createdAt.toDate() : null
-    };
-  });
+      transactions = txnsSnap.docs.map(doc => {
+        const d = doc.data();
+        return {
+          id: doc.id,
+          amount: d.amount,
+          status: d.status,
+          createdAt: d.createdAt ? d.createdAt.toDate() : null
+        };
+      });
+    } catch (indexErr) {
+      console.warn("⚠️ Firestore index not ready yet:", indexErr.message);
+      transactions = [];
+    }
 
-  res.json({ phone, balance, transactions });
+    res.json({ 
+      success: true, 
+      phone, 
+      balance, 
+      transactions 
+    });
+
+  } catch (err) {
+    console.error("🚨 /balance error:", err);
+    res.status(500).json({ success: false, error: "Server error while fetching balance" });
+  }
 });
 
 // -------- Start Server --------
