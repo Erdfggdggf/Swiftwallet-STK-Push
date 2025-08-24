@@ -9,7 +9,7 @@ const PORT = process.env.PORT || 3000;
 
 app.use(bodyParser.json());
 app.use(cors({
-  origin: 'https://swiftwallet2024.netlify.app'   // adjust if frontend changes
+  origin: 'https://shiny-centaur-0fddda.netlify.app'   // adjust if frontend changes
 }));
 
 // -------- Firebase Init --------
