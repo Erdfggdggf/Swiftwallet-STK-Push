@@ -9,7 +9,7 @@ const PORT = process.env.PORT || 3000;
 
 app.use(bodyParser.json());
 app.use(cors({
-  origin: 'https://storied-sopapillas-1955b5.netlify.app'   // keep your frontend domain
+  origin: 'https://scintillating-maamoul-912e4d.netlify.app'   // keep your frontend domain
 }));
 
 // -------- Firebase Init --------
@@ -114,7 +114,15 @@ app.post('/callback', async (req, res) => {
     console.log("📥 Callback received:", data);
 
     const phone = formatPhone(data?.result?.Phone || data.phone_number);
-    const amount = Number(data?.result?.Amount || data.amount);
+
+    // ✅ safer amount parsing
+    const rawAmount = data?.result?.Amount || data.amount || 0;
+    const amount = parseFloat(rawAmount);
+    if (isNaN(amount) || amount <= 0) {
+      console.warn("⚠️ Invalid amount in callback:", rawAmount);
+      return res.json({ ResultCode: 0, ResultDesc: "Ignored invalid amount" });
+    }
+
     const reference = data.external_reference;
 
     // ✅ Flexible success check
@@ -168,14 +176,14 @@ app.get('/balance/:phone', async (req, res) => {
     const userDoc = await db.collection("users").doc(phone).get();
     let balance = userDoc.exists ? (userDoc.data().balance || 0) : 0;
 
-    // ✅ Safety fallback: if balance is 0, recalc from transactions
-    if (balance === 0) {
+    // ✅ Recalc if invalid or <= 0
+    if (!userDoc.exists || !Number.isFinite(balance) || balance <= 0) {
       const txnsSnap = await db.collection("transactions")
         .where("phone", "==", phone)
         .where("status", "==", "SUCCESS")
         .get();
 
-      balance = txnsSnap.docs.reduce((sum, doc) => sum + (doc.data().amount || 0), 0);
+      balance = txnsSnap.docs.reduce((sum, doc) => sum + (parseFloat(doc.data().amount) || 0), 0);
     }
 
     let transactions = [];
