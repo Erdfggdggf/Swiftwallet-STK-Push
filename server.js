@@ -9,7 +9,7 @@ const PORT = process.env.PORT || 3000;
 
 app.use(bodyParser.json());
 app.use(cors({
-  origin: 'https://endearing-bubblegum-391f38.netlify.app'   // keep your frontend domain
+  origin: 'https://endearing-bubblegum-391f38.netlify.app'   // your frontend domain
 }));
 
 // -------- Firebase Init --------
@@ -32,6 +32,39 @@ function formatPhone(phone) {
   if (digits.length === 10 && digits.startsWith('07')) return '254' + digits.substring(1);
   if (digits.length === 12 && digits.startsWith('254')) return digits;
   return null;
+}
+
+// -------- SSE (real-time updates) --------
+const clients = {};
+
+app.get('/events/:phone', (req, res) => {
+  const phone = formatPhone(req.params.phone);
+  if (!phone) return res.status(400).end();
+
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+
+  clients[phone] = res;
+  console.log(`📡 Client connected for phone ${phone}`);
+
+  req.on('close', () => {
+    delete clients[phone];
+    console.log(`❌ Client disconnected for phone ${phone}`);
+  });
+});
+
+function pushBalanceUpdate(phone, balance, reference, status) {
+  if (clients[phone]) {
+    clients[phone].write(`data: ${JSON.stringify({
+      phone,
+      balance,
+      reference,
+      status,   // "PENDING", "SUCCESS", "FAILED"
+      timestamp: new Date().toISOString()
+    })}\n\n`);
+    console.log(`📢 Sent SSE update to ${phone}: status=${status}, balance=${balance}`);
+  }
 }
 
 // -------- STK Push Endpoint --------
@@ -58,6 +91,9 @@ app.post('/pay', async (req, res) => {
       createdAt: FieldValue.serverTimestamp()
     });
 
+    // 🔔 Notify frontend (waiting for PIN)
+    pushBalanceUpdate(formattedPhone, 0, external_reference, "PENDING");
+
     const payload = {
       amount: Math.round(amount),
       phone_number: formattedPhone,
@@ -75,7 +111,7 @@ app.post('/pay', async (req, res) => {
       }
     });
 
-    console.log("📤 SwiftWallet response:", resp.data);
+    console.log("📩 SwiftWallet response:", resp.data);
 
     if (resp.data?.success) {
       await db.collection("transactions").doc(external_reference).set({
@@ -104,6 +140,9 @@ app.post('/pay', async (req, res) => {
         updatedAt: FieldValue.serverTimestamp()
       }, { merge: true });
 
+      // 🔔 Notify frontend
+      pushBalanceUpdate(formattedPhone, 0, external_reference, "FAILED");
+
       res.status(400).json({ success: false, message: resp.data?.error || "Payment initiation failed" });
     }
 
@@ -127,7 +166,6 @@ app.post('/callback', async (req, res) => {
     const phone = formatPhone(data?.result?.Phone || data.phone_number || data?.Phone);
     const reference = data.external_reference || data?.CheckoutRequestID;
 
-    // ✅ Enhanced amount parsing - try multiple fields
     const rawAmount = data?.result?.Amount || data.amount || data?.Amount || data?.TransAmount || 0;
     const amount = parseFloat(rawAmount);
     
@@ -136,7 +174,6 @@ app.post('/callback', async (req, res) => {
       return res.json({ ResultCode: 0, ResultDesc: "Ignored invalid amount" });
     }
 
-    // ✅ Enhanced success detection - multiple patterns
     const status = data?.status || data?.result?.status || data?.ResultCode;
     const resultDesc = data?.ResultDesc || data?.result?.ResultDesc || '';
     
@@ -182,14 +219,20 @@ app.post('/callback', async (req, res) => {
         });
 
         console.log(`✅ Balance updated for ${phone} +${amount}, new balance: ${newBalance}`);
+
+        // 🔔 Notify frontend
+        pushBalanceUpdate(phone, newBalance, reference, "SUCCESS");
       } else {
-        // Mark transaction as failed
         await db.collection("transactions").doc(reference).set({
           status: "FAILED",
           callback: data,
           updatedAt: FieldValue.serverTimestamp()
         }, { merge: true });
+
         console.log(`❌ Transaction ${reference} marked as FAILED`);
+
+        // 🔔 Notify frontend
+        pushBalanceUpdate(phone, 0, reference, "FAILED");
       }
     } else {
       console.warn("⚠️ Missing phone or reference in callback:", { phone, reference });
@@ -222,12 +265,12 @@ app.post('/update-status/:reference', async (req, res) => {
       updatedAt: FieldValue.serverTimestamp()
     }, { merge: true });
     
-    // If marking as SUCCESS, update balance
     if (status.toUpperCase() === "SUCCESS" && txnData.phone && txnData.amount) {
       const userRef = db.collection("users").doc(txnData.phone);
+      let newBalance = 0;
       await db.runTransaction(async (t) => {
         const doc = await t.get(userRef);
-        let newBalance = txnData.amount;
+        newBalance = txnData.amount;
         if (doc.exists) {
           newBalance += doc.data().balance || 0;
         }
@@ -237,6 +280,13 @@ app.post('/update-status/:reference', async (req, res) => {
           updatedAt: FieldValue.serverTimestamp() 
         });
       });
+
+      // 🔔 Notify frontend
+      pushBalanceUpdate(txnData.phone, newBalance, reference, "SUCCESS");
+    }
+
+    if (status.toUpperCase() === "FAILED") {
+      pushBalanceUpdate(txnData.phone, 0, reference, "FAILED");
     }
     
     res.json({ success: true, message: `Transaction ${reference} updated to ${status}` });
@@ -255,7 +305,6 @@ app.get('/balance/:phone', async (req, res) => {
     const userDoc = await db.collection("users").doc(phone).get();
     let balance = userDoc.exists ? (userDoc.data().balance || 0) : 0;
 
-    // ✅ Recalc if invalid or <= 0
     if (!userDoc.exists || !Number.isFinite(balance) || balance <= 0) {
       const txnsSnap = await db.collection("transactions")
         .where("phone", "==", phone)
@@ -264,7 +313,6 @@ app.get('/balance/:phone', async (req, res) => {
 
       balance = txnsSnap.docs.reduce((sum, doc) => sum + (parseFloat(doc.data().amount) || 0), 0);
       
-      // Update the users collection with recalculated balance
       await db.collection("users").doc(phone).set({
         phone,
         balance,
