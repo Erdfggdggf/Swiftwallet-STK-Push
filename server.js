@@ -9,7 +9,7 @@ const PORT = process.env.PORT || 3000;
 
 app.use(bodyParser.json());
 app.use(cors({
-  origin: 'https://endearing-bubblegum-391f38.netlify.app'   // your frontend domain
+  origin: 'https://comfy-fudge-60a53b.netlify.app'   // your frontend domain
 }));
 
 // -------- Firebase Init --------
